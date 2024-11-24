@@ -1,0 +1,6 @@
+CREATE TABLE Orders (
+    Id INT IDENTITY(1,1) PRIMARY KEY,
+    CustomerId INT FOREIGN KEY REFERENCES Customers(Id),
+    OrderDate DATETIME DEFAULT GETDATE(),
+    Amount DECIMAL(18,2)
+);
