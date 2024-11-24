@@ -25,9 +25,6 @@ More Info: https://dbup.readthedocs.io/en/latest/
 
 ### **3.1. Steps to Embed SQL Scripts in Assembly**
 
-**Add SQL Scripts to the Project:**
-   Place your SQL migration scripts in a folder (e.g., `Migrations`) within the project.
-
 **Example folder structure:**
 
 ```plaintext
@@ -41,21 +38,9 @@ ProjectRoot
 │       └── 20241124_153010_AddOrdersTable.sql
 │
 └── Helpers
-    ├── MigrationManager.cs
+    ├── MigrationHelper.cs
 └── Program.cs
 ```
-
-### **3.2. Set SQL Files as Embedded Resources:**
-   - Right-click on each `.sql` file in the `Migrations` folder in your project.
-   - Set the **Build Action** to **Embedded Resource** (in Visual Studio or your editor's properties for the file).
-
-   Alternatively, edit the `.csproj` file to include all `.sql` files as embedded resources:
-
-   ```xml
-   <ItemGroup>
-       <EmbeddedResource Include="Migrations\*.sql" />
-   </ItemGroup>
-   ```
 ---
 
 ## **4. Step-by-Step Implementation**
@@ -67,72 +52,65 @@ Run the following command in the project root:
 dotnet add package DbUp
 ```
 
-### **4.2. Create a Migration Manager**
-Add a `MigrationManager.cs` to handle schema upgrades using a transaction-scoped connection with versioning using the built-in SchemaVersions table and enhanced logging.
+### **4.2. Create a Migration Helper Class**
+Add a `MigrationHelper.cs` to handle schema upgrades using a transaction-scoped connection with versioning using the built-in SchemaVersions table and enhanced logging.
 
 ```csharp
-using DbUp;
 using DbUp.Engine.Output;
-using System;
-using System.Data;
-using System.Data.SqlClient;
+using System.Transactions;
 
-public class MigrationManager
+public class MigrationHelper
 {
-    public static void Execute(string connectionString)
+    private readonly string _connectionString;
+    private readonly ILogger<MigrationHelper> _logger;
+
+    public MigrationHelper(IConfiguration configuration, ILogger<MigrationHelper> logger)
+    {
+        _connectionString = configuration.GetConnectionString("DefaultConnection")!;
+        _logger = logger;
+    }
+
+    public void Execute()
     {
         var logger = new ConsoleUpgradeLog();
-
-        // Create a connection to the database
-        using var connection = new SqlConnection(connectionString);
-        connection.Open();
-
-        // Start a transaction
-        using var transaction = connection.BeginTransaction(IsolationLevel.Serializable);
 
         try
         {
             // Configure the DbUp upgrader
             var upgrader = DeployChanges.To
-                .SqlDatabase(() => connection, () => transaction)
-                .WithScriptsEmbeddedInAssembly(typeof(MigrationManager).Assembly)
+                .SqlDatabase(_connectionString)
+                .WithTransactionPerScript() // Alternatively, use .WithTransaction() for a single transaction
+                .WithScriptsFromFileSystem("Migrations")
                 .LogTo(logger) // Use detailed logging
                 .JournalToSqlTable("dbo", "SchemaVersions") // Use SchemaVersions table for versioning
                 .Build();
 
-            // Perform the upgrade
-            var result = upgrader.PerformUpgrade();
-
-            if (!result.Successful)
+            using (var scope = new TransactionScope(TransactionScopeOption.Required, 
+                                   new TransactionOptions { IsolationLevel = System.Transactions.IsolationLevel.ReadCommitted }, TransactionScopeAsyncFlowOption.Enabled))
             {
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine($"Migration failed: {result.Error}");
-                Console.ResetColor();
+                // Perform database upgrade
+                var result = upgrader.PerformUpgrade();
 
-                // Rollback the transaction if migration fails
-                transaction.Rollback();
-                throw new Exception("Database upgrade failed!");
+                if (!result.Successful)
+                {
+                    logger.WriteError($"Upgrade failed: {result.Error}");
+                    throw result.Error;
+                }
+
+                // Commit the transaction
+                scope.Complete();
+
+                // Show success message if any migration applied
+                if (result.Scripts.Count() > 0)
+                {
+                    logger.WriteInformation("Database upgrade successful!");
+                }
             }
-
-            Console.ForegroundColor = ConsoleColor.Green;
-            Console.WriteLine("Database upgrade successful!");
-            Console.ResetColor();
-
-            // Commit the transaction on success
-            transaction.Commit();
         }
         catch (Exception ex)
         {
-            // Rollback the transaction on any exception
-            transaction.Rollback();
-            Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine($"Transaction rolled back: {ex.Message}");
-            Console.ResetColor();
+            logger.WriteError($"Upgrade failed. Exception Message: {ex.Message}");
             throw;
-        }
-        finally
-        {
-            connection.Close();
         }
     }
 }
@@ -190,27 +168,43 @@ The table has the following structure:
 Update the `Program.cs` to execute migrations:
 
 ```csharp
-using System;
+using DbUp.Api.Helpers;
 
-class Program
+var builder = WebApplication.CreateBuilder(args);
+
+// Add services to the container.
+
+builder.Services.AddControllers();
+builder.Services.AddScoped<MigrationHelper>();
+
+// Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
+
+var app = builder.Build();
+
+// Configure the HTTP request pipeline.
+if (app.Environment.IsDevelopment())
 {
-    static void Main(string[] args)
-    {
-        var connectionString = "YourConnectionStringHere";
-
-        Console.WriteLine("Executing database migrations...");
-        try
-        {
-            MigrationManager.Execute(connectionString);
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Error during migration: {ex.Message}");
-        }
-
-        Console.WriteLine("Database operations completed.");
-    }
+    app.UseSwagger();
+    app.UseSwaggerUI();
 }
+
+app.UseHttpsRedirection();
+
+app.UseAuthorization();
+
+// Apply migrations at startup
+using (var scope = app.Services.CreateScope())
+{
+    var migrationManager = scope.ServiceProvider.GetRequiredService<MigrationHelper>();
+    migrationManager.Execute();
+}
+
+app.MapControllers();
+
+app.Run();
+
 ```
 
 ---
@@ -251,10 +245,22 @@ Re-run the application to upgrade.
 
 ---
 
-## **7. Advanced Considerations**
-- **Versioning**: Store the executed scripts in a `SchemaVersions` table (DbUp handles this internally).
-- **Error Logging**: Use `DbUp.Engine.Output.IUpgradeLog` for detailed logging.
-- **Script Providers**: Use `WithScriptsEmbeddedInAssembly` for embedded scripts if you don’t want a file-based approach.
+## **7. Benefits of this Approach**
+
+1. **Versioning with SchemaVersions Table**:
+   - Ensures all executed scripts are tracked.
+   - Prevents re-execution of already applied scripts.
+
+2. **Detailed Logging**:
+   - Provides insights during migrations and rollbacks.
+   - Helps identify issues quickly.
+
+3. **Rollback Capability**:
+   - Safeguards database integrity in case of migration failures.
+
+4. **Extensibility**:
+   - Supports multiple databases with minor modifications.
+   - Easily integrates into CI/CD pipelines.
 
 ---
 
