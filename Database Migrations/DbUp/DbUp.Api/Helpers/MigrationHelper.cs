@@ -1,15 +1,14 @@
 ﻿using DbUp.Engine.Output;
-using System.Reflection;
 using System.Transactions;
 
 namespace DbUp.Api.Helpers
 {
-    public class MigrationManager
+    public class MigrationHelper
     {
         private readonly string _connectionString;
-        private readonly ILogger<MigrationManager> _logger;
+        private readonly ILogger<MigrationHelper> _logger;
 
-        public MigrationManager(IConfiguration configuration, ILogger<MigrationManager> logger)
+        public MigrationHelper(IConfiguration configuration, ILogger<MigrationHelper> logger)
         {
             _connectionString = configuration.GetConnectionString("DefaultConnection")!;
             _logger = logger;

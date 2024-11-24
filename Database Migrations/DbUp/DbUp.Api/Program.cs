@@ -2,13 +2,10 @@ using DbUp.Api.Helpers;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Accessing the connection string from appsettings.json
-var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
-
 // Add services to the container.
 
 builder.Services.AddControllers();
-builder.Services.AddScoped<MigrationManager>();
+builder.Services.AddScoped<MigrationHelper>();
 
 // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
 builder.Services.AddEndpointsApiExplorer();
@@ -30,7 +27,7 @@ app.UseAuthorization();
 // Apply migrations at startup
 using (var scope = app.Services.CreateScope())
 {
-    var migrationManager = scope.ServiceProvider.GetRequiredService<MigrationManager>();
+    var migrationManager = scope.ServiceProvider.GetRequiredService<MigrationHelper>();
     migrationManager.Execute();
 }
 
